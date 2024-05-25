@@ -26,7 +26,7 @@ logging.basicConfig(level=ENV.get("TG_LOG_LEVEL", "INFO"))
 
 
 async def reply_with_long_text(update: Update, text: str, **kwargs):
-    MAX_LENGTH = 200
+    MAX_LENGTH = 4096
     for i in list(range(0, len(text), MAX_LENGTH))[:2]:
         await update.message.reply_text(text[i: i + MAX_LENGTH], **kwargs)
 
@@ -86,6 +86,7 @@ async def download(update: Update, context: ContextTypes):
         await update.message.reply_text(
             "Already downloading.", reply_to_message_id=update.message.message_id
         )
+    download_link_locks[magnet_link] = True
 
     try:
         # download the torrent with aria2c
@@ -105,7 +106,7 @@ async def download(update: Update, context: ContextTypes):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        await update.message.reply_markdown_v2(
+        await update.message.reply_text(
             f"Downloading torrent from magnet link: `{magnet_link}`",
             reply_to_message_id=update.message.message_id,
         )
@@ -150,6 +151,17 @@ async def ls(update: Update, context: ContextTypes):
         return_msg += f"{file}\n"
     await update.message.reply_text(
         return_msg,
+        reply_to_message_id=update.message.message_id,
+    )
+
+
+@permission_check
+async def flattern(update: Update, context: ContextTypes):
+    files = find_all(DOWNLOAD_DIR, False)
+    for file in files:
+        os.rename(file, os.path.join(DOWNLOAD_DIR, os.path.basename(file)))
+    await update.message.reply_text(
+        "Files flatterned.",
         reply_to_message_id=update.message.message_id,
     )
 
@@ -247,7 +259,7 @@ async def compress(update: Update, context: ContextTypes):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        await update.message.reply_markdown_v2(
+        await update.message.reply_text(
             f"Compressing file: `{file_name}`",
             reply_to_message_id=update.message.message_id,
         )
@@ -266,12 +278,67 @@ async def compress(update: Update, context: ContextTypes):
         del compress_filename_locks[file_name]
 
 
+@permission_check
+async def stream_file(update: Update, context: ContextTypes):
+    file_name = " ".join(context.args)
+    file_path = os.path.join(DOWNLOAD_DIR, file_name)
+    if not os.path.exists(file_path):
+        await update.message.reply_text(
+            f"File not found: {file_name}",
+            reply_to_message_id=update.message.message_id,
+        )
+        return
+
+    if not ENV.get("TELEGRAM_STREAM_URL") or not ENV.get("TELEGRAM_STREAM_KEY"):
+        print("???")
+        await update.message.reply_text(
+            f"Streaming not configured.",
+            reply_to_message_id=update.message.message_id,
+        )
+        return
+
+    url = ENV.get("TELEGRAM_STREAM_URL", "") + ENV.get("TELEGRAM_STREAM_KEY", "")
+    await update.message.reply_text(
+            f"Streaming URL:{url}",
+            reply_to_message_id=update.message.message_id,
+        )
+
+    try:
+        # ffmpeg -re  -i ./downloads/\[Nekomoe\ kissaten\]\[GIRLS\ BAND\ CRY\]\[08\]\[1080p\]\[JPTC\].mp4 -vf tpad=stop_mode=clone:stop_duration=9999 -f flv rtmps://
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg",
+            "-re",
+            "-i",
+            file_path,
+            "-c",
+            "copy",
+            "-f",
+            "flv",
+            url,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        await update.message.reply_text(
+            f"Streaming file: `{file_name}`",
+            reply_to_message_id=update.message.message_id,
+        )
+        await handle_command_output(update, proc, "Stream")
+    except BaseException as e:
+        print(e)
+        await update.message.reply_text(
+            f"Error streaming file: {file_name}",
+            reply_to_message_id=update.message.message_id,
+        )
+
+
 handlers = [
     CommandHandler(command="download", callback=download),
     CommandHandler(command="ls", callback=ls),
+    CommandHandler(command="flattern", callback=flattern),
     CommandHandler(command="rm", callback=rm),
     CommandHandler(command="send", callback=send_file),
     CommandHandler(command="compress", callback=compress),
+    CommandHandler(command="stream", callback=stream_file)
 ]
 
 application = (
